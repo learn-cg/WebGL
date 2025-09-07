@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KTX3D Texture Cube</title>
+    <style>
+      body { background: #222; color: #eee; font-family: sans-serif; }
+      canvas { display: block; margin: 0 auto; background: #111; }
+      #status { text-align: center; margin-top: 10px; }
+    </style>
+</head>
+<body>
+  <h2 style="text-align:center">KTX3D Texture on Cube</h2>
+  <canvas id="glcanvas" width="512" height="512"></canvas>
+  <div id="status"></div>
+  <div id="controls" style="text-align:center;margin-top:8px">
+    <label><input type="radio" name="texMode" value="procedural" checked> Procedural Rainbow</label>
+    <label style="margin-left:12px"><input type="radio" name="texMode" value="ktx"> Load KTX file</label>
+    <input type="file" id="ktxFileInput" accept=".ktx,.ktx2" style="display:none;margin-left:8px" />
+    <button id="startBtn" style="margin-left:8px">Start</button>
+  </div>
+  <script type="module">
+  // dynamic import: we'll load the KTX parser only when needed so debug drawing works
+  let ktxRead = null;
+  // current running scene stopper (to cancel previous animation when switching textures)
+  let currentStop = null;
+
+  const canvas = document.getElementById('glcanvas');
+  const gl = canvas.getContext('webgl2');
+  const status = document.getElementById('status');
+  if (!gl) {
+    status.textContent = 'WebGL2 not supported';
+    throw new Error('WebGL2 not supported');
+  }
+  console.log('WebGL2 context created:', gl);
+  // Quick debug draw to verify basic rendering works
+  // minimal createShaderDebug for debug use (full createShader appears later)
+  function createShaderDebug(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    const ok = gl.getShaderParameter(s, gl.COMPILE_STATUS);
+    const info = gl.getShaderInfoLog(s);
+    console.log('createShaderDebug: compiled=', ok, 'info=', info);
+    if (!ok) {
+      console.error('Debug shader compile error:', info, '\nSource:\n', src);
+    }
+    return s;
+  }
+  function debugDrawTriangle() {
+    const vsSrc = `#version 300 es
+    in vec2 aPos;
+    void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
+    const fsSrc = `#version 300 es
+    precision highp float;
+    out vec4 outColor;
+    void main() { outColor = vec4(0.0, 0.0, 1.0, 1.0); }`;
+  const vs = createShaderDebug(gl.VERTEX_SHADER, vsSrc);
+  const fs = createShaderDebug(gl.FRAGMENT_SHADER, fsSrc);
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      const err = gl.getProgramInfoLog(p);
+      console.error('Debug program link error:', err);
+      status.textContent = 'Debug program link error';
+      return;
+    }
+    gl.useProgram(p);
+    const triBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, triBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0.6,-0.6,-0.6,0.6,-0.6]), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(p, 'aPos');
+    console.log('debug program attrib location aPos=', aPos);
+    if (aPos >= 0) {
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    }
+    gl.clearColor(0.1,0.1,0.1,1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.finish();
+    status.textContent = 'Debug triangle drawn (blue)';
+    // keep program/shaders/buffer alive for inspection
+    console.log('Debug draw complete — program/shaders retained for inspection');
+  }
+  // createShader used by debugDrawTriangle must be defined; ensure function exists below
+  const DEBUG_TRIANGLE = false; // set to true to draw a quick triangle and skip cube rendering
+  if (DEBUG_TRIANGLE) {
+    // Defer call to allow createShader definition below to be available
+    setTimeout(() => {
+      try { debugDrawTriangle(); } catch (e) { console.error('debug draw failed', e); }
+    }, 0);
+  }
+
+  function showError(msg) {
+    status.textContent = msg;
+  }
+
+  async function loadKTX3DTexture(url) {
+    if (!ktxRead) {
+      try {
+        const mod = await import('./ktx-parse.modern.js');
+        ktxRead = mod.read || mod.default || mod;
+        console.log('ktx parser loaded:', ktxRead ? 'ok' : 'no-read-fn');
+      } catch (e) {
+        showError('Failed to load ktx parser: ' + e);
+        console.error('ktx parser import error', e);
+        return null;
+      }
+    }
+    const resp = await fetch(url);
+    const arrayBuffer = await resp.arrayBuffer();
+    let ktx;
+    try {
+      ktx = ktxRead(new Uint8Array(arrayBuffer));
+    } catch (e) {
+      showError('Failed to parse KTX: ' + e);
+      return null;
+    }
+    if (!ktx.levels || !ktx.levels[0]) {
+      showError('No valid texture data found.');
+      return null;
+    }
+    const level = ktx.levels[0];
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    let internalFormat = gl.RGBA;
+    let format = gl.RGBA;
+    let type = gl.UNSIGNED_BYTE;
+    if (ktx.glType === 0x1406 && ktx.glFormat === 0x1908 && ktx.glInternalFormat === 0x8814) {
+      type = gl.FLOAT;
+      internalFormat = gl.RGBA32F;
+    }
+    gl.texImage3D(
+      gl.TEXTURE_3D,
+      0,
+      internalFormat,
+      ktx.pixelWidth,
+      ktx.pixelHeight,
+      ktx.pixelDepth,
+      0,
+      format,
+      type,
+      level.levelData
+    );
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  // Create a WebGL texture from a parsed KTX object
+  function createTextureFromKTX(ktx) {
+    if (!ktx.levels || !ktx.levels[0]) return null;
+    const level = ktx.levels[0];
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    let internalFormat = gl.RGBA;
+    let format = gl.RGBA;
+    let type = gl.UNSIGNED_BYTE;
+    if (ktx.glType === 0x1406 && ktx.glFormat === 0x1908 && ktx.glInternalFormat === 0x8814) {
+      type = gl.FLOAT;
+      internalFormat = gl.RGBA32F;
+    }
+    gl.texImage3D(gl.TEXTURE_3D, 0, internalFormat, ktx.pixelWidth, ktx.pixelHeight, ktx.pixelDepth, 0, format, type, level.levelData);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  // Procedurally generate a 3D rainbow texture (RGBA8)
+  function generateRainbow3DTexture(w = 64, h = 64, d = 32) {
+    const size = w * h * d * 4;
+    const data = new Uint8Array(size);
+    function hsvToRgb(h, s, v) {
+      const c = v * s;
+      const hp = h / 60;
+      const x = c * (1 - Math.abs((hp % 2) - 1));
+      let r = 0, g = 0, b = 0;
+      if (0 <= hp && hp < 1) { r = c; g = x; b = 0; }
+      else if (1 <= hp && hp < 2) { r = x; g = c; b = 0; }
+      else if (2 <= hp && hp < 3) { r = 0; g = c; b = x; }
+      else if (3 <= hp && hp < 4) { r = 0; g = x; b = c; }
+      else if (4 <= hp && hp < 5) { r = x; g = 0; b = c; }
+      else if (5 <= hp && hp < 6) { r = c; g = 0; b = x; }
+      const m = v - c;
+      return [Math.floor((r + m) * 255), Math.floor((g + m) * 255), Math.floor((b + m) * 255)];
+    }
+    let ptr = 0;
+    for (let z = 0; z < d; z++) {
+      const nz = z / (d - 1);
+      for (let y = 0; y < h; y++) {
+        const ny = y / (h - 1);
+        for (let x = 0; x < w; x++) {
+          const nx = x / (w - 1);
+          // hue varies with x, value with y, and slightly shift by z for depth
+          const hue = ((nx * 360) + (nz * 60)) % 360;
+          const sat = 1.0;
+          const val = 0.3 + 0.7 * ny; // darker at bottom
+          const [r, g, b] = hsvToRgb(hue, sat, val);
+          data[ptr++] = r;
+          data[ptr++] = g;
+          data[ptr++] = b;
+          data[ptr++] = 255;
+        }
+      }
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, w, h, d, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  // Cube geometry and rendering
+  // positions, texcoords, normals
+  const cubeVerts = new Float32Array([
+    // positions      // texcoords   // normals
+    -1,-1,-1, 0,0,0,  -1,-1,-1,
+     1,-1,-1, 1,0,0,   1,-1,-1,
+     1, 1,-1, 1,1,0,   1, 1,-1,
+    -1, 1,-1, 0,1,0,  -1, 1,-1,
+    -1,-1, 1, 0,0,1,  -1,-1, 1,
+     1,-1, 1, 1,0,1,   1,-1, 1,
+     1, 1, 1, 1,1,1,   1, 1, 1,
+    -1, 1, 1, 0,1,1,  -1, 1, 1,
+  ]);
+  const cubeIndices = new Uint16Array([
+    0,1,2, 2,3,0, // back
+    4,5,6, 6,7,4, // front
+    0,4,7, 7,3,0, // left
+    1,5,6, 6,2,1, // right
+    3,2,6, 6,7,3, // top
+    0,1,5, 5,4,0  // bottom
+  ]);
+
+  const vsSource = `#version 300 es
+  layout(location = 0) in vec3 aPos;
+  layout(location = 1) in vec3 aTex;
+  layout(location = 2) in vec3 aNormal;
+  uniform mat4 uMVP;
+  out vec3 vTex;
+  out vec3 vPos;
+  out vec3 vNormal;
+  void main() {
+    vTex = aTex;
+    vPos = aPos;
+    vNormal = normalize(aNormal);
+    gl_Position = uMVP * vec4(aPos, 1.0);
+  }`;
+  const fsSource = `#version 300 es
+  precision highp float;
+  precision highp sampler3D;
+  in vec3 vTex;
+  in vec3 vPos;
+  in vec3 vNormal;
+  uniform sampler3D uTex3D;
+  out vec4 outColor;
+  // Phong parameters
+  const vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
+  const vec3 cameraPos = vec3(0.0, 0.0, 4.0);
+  void main() {
+    vec3 tc = clamp(vTex, 0.0, 1.0);
+    vec4 texCol = texture(uTex3D, tc);
+    vec3 n = normalize(vNormal);
+    vec3 L = normalize(lightDir);
+    float NdotL = max(dot(n, L), 0.0);
+    vec3 viewDir = normalize(cameraPos - vPos);
+    vec3 reflectDir = reflect(-L, n);
+    float spec = 0.0;
+    if (NdotL > 0.0) spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+    vec3 ambient = 0.15 * vec3(1.0);
+    vec3 diffuse = 0.75 * NdotL * vec3(1.0);
+    vec3 specular = 0.6 * spec * vec3(1.0);
+    vec3 lit = ambient + diffuse + specular;
+    vec3 base = texCol.a < 0.01 ? tc : texCol.rgb;
+    outColor = vec4(base * lit, 1.0);
+  }
+  `;
+  function createShaderFull(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      const errMsg = gl.getShaderInfoLog(s);
+      showError('Shader error:\n' + errMsg + '\nSource:\n' + src);
+      console.error('Shader error:', errMsg, '\nSource:\n', src);
+    }
+    return s;
+  }
+  function createProgram(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      showError('Program error: ' + gl.getProgramInfoLog(p));
+    }
+    return p;
+  }
+
+  // refactored: start scene with a given WebGL texture
+  function runSceneWithTexture(tex) {
+    // stop previous scene if running
+    if (typeof currentStop === 'function') {
+      try { currentStop(); } catch (e) { console.warn('previous stop failed', e); }
+      currentStop = null;
+    }
+    const vs = createShaderFull(gl.VERTEX_SHADER, vsSource);
+    const fs = createShaderFull(gl.FRAGMENT_SHADER, fsSource);
+    // report shader compile status
+    const vsOk = gl.getShaderParameter(vs, gl.COMPILE_STATUS);
+    const vsInfo = gl.getShaderInfoLog(vs);
+    const fsOk = gl.getShaderParameter(fs, gl.COMPILE_STATUS);
+    const fsInfo = gl.getShaderInfoLog(fs);
+  console.log('VS compile:', vsOk, vsInfo);
+  console.log('FS compile:', fsOk, fsInfo);
+  // show more detailed compile/link status in the status element for quick debug
+  status.textContent = `VS:${vsOk} FS:${fsOk} -- vsInfo:${vsInfo||'<ok>'} fsInfo:${fsInfo||'<ok>'}`;
+    const prog = createProgram(vs, fs);
+    const linkOk = gl.getProgramParameter(prog, gl.LINK_STATUS);
+    const linkInfo = gl.getProgramInfoLog(prog);
+    console.log('Program link:', linkOk, linkInfo);
+    if (!linkOk) {
+      showError('Program link error: ' + linkInfo);
+      status.textContent += ' | LINK ERR: ' + linkInfo;
+      return;
+    }
+    status.textContent += ' | Program linked';
+    gl.useProgram(prog);
+
+  // Buffers + VAO
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, cubeVerts, gl.STATIC_DRAW);
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeIndices, gl.STATIC_DRAW);
+  // attribute layout: location 0 = position, 1 = texcoord, 2 = normal
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 36, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 36, 12);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 36, 24);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_3D, tex);
+  gl.uniform1i(gl.getUniformLocation(prog, 'uTex3D'), 0);
+
+    // MVP matrix (projection * view * model)
+    const uMVP = gl.getUniformLocation(prog, 'uMVP');
+    function degToRad(d){ return d * Math.PI / 180; }
+    function mulMat4(a, b) {
+      const out = new Float32Array(16);
+      for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+          let s = 0;
+          for (let k = 0; k < 4; k++) s += a[k*4 + j] * b[i*4 + k];
+          out[i*4 + j] = s;
+        }
+      }
+      return out;
+    }
+    function perspective(fovy, aspect, near, far) {
+      const f = 1.0 / Math.tan(fovy/2);
+      const nf = 1 / (near - far);
+      const out = new Float32Array(16);
+      out[0] = f / aspect; out[1]=0; out[2]=0; out[3]=0;
+      out[4]=0; out[5]=f; out[6]=0; out[7]=0;
+      out[8]=0; out[9]=0; out[10]=(far+near)*nf; out[11]=-1;
+      out[12]=0; out[13]=0; out[14]=(2*far*near)*nf; out[15]=0;
+      return out;
+    }
+    function translate(tx,ty,tz){
+      const out = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, tx,ty,tz,1]);
+      return out;
+    }
+    function rotationRodrigues(angleDeg, ux, uy, uz) {
+      const rad = degToRad(angleDeg);
+      const c = Math.cos(rad), s = Math.sin(rad), t = 1 - c;
+      // normalize axis
+      const len = Math.hypot(ux,uy,uz) || 1;
+      ux/=len; uy/=len; uz/=len;
+      const r00 = c + ux*ux*t;
+      const r01 = ux*uy*t - uz*s;
+      const r02 = ux*uz*t + uy*s;
+      const r10 = uy*ux*t + uz*s;
+      const r11 = c + uy*uy*t;
+      const r12 = uy*uz*t - ux*s;
+      const r20 = uz*ux*t - uy*s;
+      const r21 = uz*uy*t + ux*s;
+      const r22 = c + uz*uz*t;
+      // column-major 4x4
+      return new Float32Array([
+        r00, r10, r20, 0,
+        r01, r11, r21, 0,
+        r02, r12, r22, 0,
+        0,   0,   0,   1
+      ]);
+    }
+    function scaleMat(s){
+      return new Float32Array([s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]);
+    }
+    function getMVP(angle) {
+      const aspect = canvas.width / canvas.height;
+      const proj = perspective(degToRad(60), aspect, 0.1, 100.0);
+      const view = translate(0,0,-4);
+      const modelR = rotationRodrigues(angle, 1,1,1);
+      const modelS = scaleMat(0.8);
+      // model = modelR * modelS
+      const model = mulMat4(modelR, modelS);
+      // mvp = proj * view * model
+      const pv = mulMat4(proj, view);
+      return mulMat4(pv, model);
+    }
+
+    function draw(angle) {
+      console.log('draw frame, angle=', angle);
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.clearColor(0.0,0.0,0.0,1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.DEPTH_TEST);
+      gl.uniformMatrix4fv(uMVP, false, getMVP(angle));
+      gl.drawElements(gl.TRIANGLES, cubeIndices.length, gl.UNSIGNED_SHORT, 0);
+      const err = gl.getError();
+      if (err !== 0) console.warn('GL error after draw:', err);
+    }
+
+    let angle = 0;
+    let running = true;
+    let rafId = 0;
+    function animate() {
+      if (!running) return;
+      draw(angle);
+      angle += 1;
+      rafId = requestAnimationFrame(animate);
+    }
+    status.textContent = '3D Texture loaded!';
+    animate();
+    // expose stop function to cancel this scene
+    currentStop = function stopScene() {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      // unbind texture to avoid confusion
+      try { gl.bindTexture(gl.TEXTURE_3D, null); } catch (e) {}
+    };
+  }
+
+  // UI wiring: toggle file input visibility and start scene
+  const startBtn = document.getElementById('startBtn');
+  const ktxFileInput = document.getElementById('ktxFileInput');
+  const texModeRadios = document.getElementsByName('texMode');
+  function getSelectedMode() {
+    for (const r of texModeRadios) if (r.checked) return r.value;
+    return 'procedural';
+  }
+  // show/hide file input when mode changes
+  function updateFileInputVisibility() {
+    if (getSelectedMode() === 'ktx') ktxFileInput.style.display = 'inline-block';
+    else ktxFileInput.style.display = 'none';
+  }
+  for (const r of texModeRadios) {
+    r.addEventListener('change', updateFileInputVisibility);
+  }
+  // ensure correct initial visibility on load
+  updateFileInputVisibility();
+  // auto-restart scene when mode changes
+  for (const r of texModeRadios) {
+    r.addEventListener('change', () => {
+      if (getSelectedMode() === 'procedural') {
+        const tex = generateRainbow3DTexture(128,128,64);
+        runSceneWithTexture(tex);
+      }
+    });
+  }
+  // auto-start when a file is selected
+  ktxFileInput.addEventListener('change', async () => {
+    const file = ktxFileInput.files[0];
+    if (!file) return;
+    status.textContent = 'File selected: ' + file.name;
+    try {
+      const ab = await file.arrayBuffer();
+      if (!ktxRead) {
+        const mod = await import('./ktx-parse.modern.js');
+        ktxRead = mod.read || mod.default || mod;
+      }
+      let ktx = null;
+      try { ktx = ktxRead(new Uint8Array(ab)); } catch (e) { console.error('ktx parse failed', e); }
+      if (!ktx) {
+        showError('Failed to parse KTX; using procedural texture');
+        runSceneWithTexture(generateRainbow3DTexture(128,128,64));
+        return;
+      }
+      const tex = createTextureFromKTX(ktx);
+      if (!tex) {
+        showError('KTX did not contain 3D texture; using procedural');
+        runSceneWithTexture(generateRainbow3DTexture(128,128,64));
+        return;
+      }
+      runSceneWithTexture(tex);
+    } catch (e) {
+      console.error(e);
+      showError('Error loading file; using procedural');
+      runSceneWithTexture(generateRainbow3DTexture(128,128,64));
+    }
+  });
+  // Start button handler
+  startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    status.textContent = 'Starting...';
+    const mode = getSelectedMode();
+    if (mode === 'procedural') {
+      const tex = generateRainbow3DTexture(128,128,64);
+      runSceneWithTexture(tex);
+      status.textContent = 'Procedural texture used';
+      return;
+    }
+    // mode === 'ktx'
+    const file = ktxFileInput.files[0];
+    if (!file) {
+      showError('No KTX file selected');
+      startBtn.disabled = false;
+      return;
+    }
+    try {
+      const ab = await file.arrayBuffer();
+      if (!ktxRead) {
+        const mod = await import('./ktx-parse.modern.js');
+        ktxRead = mod.read || mod.default || mod;
+      }
+      let ktx = null;
+      try { ktx = ktxRead(new Uint8Array(ab)); } catch (e) { console.error('ktx parse failed', e); }
+      if (!ktx) {
+        showError('Failed to parse KTX; using procedural texture');
+        const tex = generateRainbow3DTexture(128,128,64);
+        runSceneWithTexture(tex);
+        return;
+      }
+      const tex = createTextureFromKTX(ktx);
+      if (!tex) {
+        showError('KTX did not contain 3D texture; using procedural');
+        runSceneWithTexture(generateRainbow3DTexture(128,128,64));
+        return;
+      }
+      runSceneWithTexture(tex);
+      status.textContent = 'KTX texture loaded';
+    } catch (e) {
+      console.error(e);
+      showError('Error loading file; using procedural');
+      runSceneWithTexture(generateRainbow3DTexture(128,128,64));
+    }
+  });
+
+  // Auto-start procedural texture for convenience/debugging when the page loads
+  if (getSelectedMode() === 'procedural') {
+    setTimeout(() => {
+      try {
+        status.textContent = 'Auto-starting procedural texture...';
+        const tex = generateRainbow3DTexture(128,128,64);
+        runSceneWithTexture(tex);
+      } catch (e) { console.error('Auto-start failed', e); }
+    }, 50);
+  }
+  </script>
+</body>
+</html>

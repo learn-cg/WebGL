@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>KTX2 Support Check</title>
+</head>
+<body>
+  <h2>KTX2 Support Check</h2>
+  <pre id="result"></pre>
+  <div id="uncompressed-support" style="margin-bottom:10px;"></div>
+  <script>
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2');
+
+    function isKTX2Supported(gl) {
+      // Check for compressed texture extensions (for compressed KTX2)
+      const astc = gl && gl.getExtension('WEBGL_compressed_texture_astc');
+      const s3tc = gl && gl.getExtension('WEBGL_compressed_texture_s3tc');
+      const etc = gl && gl.getExtension('WEBGL_compressed_texture_etc');
+      const etc1 = gl && gl.getExtension('WEBGL_compressed_texture_etc1');
+      // Uncompressed KTX2 (RGBA8, RGBA32F) is supported if WebGL2 is available
+      const uncompressed = !!gl;
+      return {
+        webgl2: !!gl,
+        ktx2_uncompressed: uncompressed,
+        astc: !!astc,
+        s3tc: !!s3tc,
+        etc: !!etc,
+        etc1: !!etc1
+      };
+    }
+
+    const support = isKTX2Supported(gl);
+  document.getElementById('result').textContent = JSON.stringify(support, null, 2);
+  document.getElementById('uncompressed-support').textContent =
+      'Uncompressed KTX2 (RGBA8, RGBA32F) is supported if WebGL2 is available: ' + (support.ktx2_uncompressed ? 'Yes' : 'No');
+  </script>
+</body>
+</html>

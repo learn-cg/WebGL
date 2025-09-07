@@ -18,7 +18,7 @@ function initialiseGL(canvas) {
     }
 
     if (!gl) {
-        alert("Unable to initialise WebGL. Your browser may not support it");
+        alert("Unable to initialise WebGL 2. Your browser may not support it");
         return false;
     }
 
@@ -33,10 +33,22 @@ function initialiseBuffer() {
          0.0, 0.7, 0.0  // Top middle
     ];
 
+    // Create and bind Vertex Array Object (VAO) - required for WebGL 2
+    gl.vao = gl.createVertexArray();
+    gl.bindVertexArray(gl.vao);
+
     // Generate a buffer object
     gl.vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.vertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexData), gl.STATIC_DRAW);
+    
+    // Set up vertex attribute pointer
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 0, 0);
+    
+    // Unbind VAO
+    gl.bindVertexArray(null);
+    
     return testGLError("initialiseBuffers");
 	
 }
@@ -46,12 +58,13 @@ var shaderProgram;
 function initialiseShaders() {
 
     var fragmentShaderSource = `#version 300 es
-            precision mediump float;
-            out vec4 FragColor;
-			void main(void)
-			{ 
-				FragColor = vec4(1.0, 1.0, 0.66, 1.0);
-			}`;
+precision mediump float;
+out vec4 FragColor;
+
+void main(void)
+{ 
+    FragColor = vec4(1.0, 1.0, 0.66, 1.0);
+}`;
     gl.fragShader = gl.createShader(gl.FRAGMENT_SHADER);
     gl.shaderSource(gl.fragShader, fragmentShaderSource);
     gl.compileShader(gl.fragShader);
@@ -60,15 +73,17 @@ function initialiseShaders() {
         alert("Failed to compile the fragment shader.\n" + gl.getShaderInfoLog(gl.fragShader));
         return false; 
     }   
+    
     // Vertex shader code
     var vertexShaderSource = `#version 300 es
-            precision mediump float;
-			in vec4 myVertex;
-			uniform mat4 transformationMatrix;
-			void main(void) 
-			{
-				gl_Position = transformationMatrix * myVertex;
-			}`;
+precision mediump float;
+in vec4 myVertex;
+uniform mat4 transformationMatrix;
+
+void main(void) 
+{
+    gl_Position = transformationMatrix * myVertex;
+}`;
     gl.vertexShader = gl.createShader(gl.VERTEX_SHADER);
     gl.shaderSource(gl.vertexShader, vertexShaderSource);
     gl.compileShader(gl.vertexShader);
@@ -125,13 +140,10 @@ function renderScene() {
         return false;
     }
 
-    // Enable the user-defined vertex array
-    gl.enableVertexAttribArray(0);
+    // Bind the VAO (this automatically sets up all vertex attributes)
+    gl.bindVertexArray(gl.vao);
 
-    // Set the vertex data to this attribute index, with the number of floats in each position
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 0, 0);
-
-    if (!testGLError("gl.vertexAttribPointer")) {
+    if (!testGLError("gl.bindVertexArray")) {
         return false;
     }
 
@@ -163,7 +175,7 @@ function main() {
 
     // Render loop
     requestAnimFrame = (function () {
-        return window.requestAnimationFrame || window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame ||
+        return window.requestAnimationFrame ||
 			function (callback) {
 			    window.setTimeout(callback, 1000, 60);
 			};

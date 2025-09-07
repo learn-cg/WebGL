@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>W06d : KTX2 Texture Loading</title>
+</head>
+<body>
+  <h2>KTX2 Texture Loader</h2>
+  <input type="file" id="fileInput" accept=".ktx2" />
+  <canvas id="glcanvas" width="512" height="512"></canvas>
+  <div id="status"></div>
+  <script type="module">
+  import { read as ktxRead } from './ktx-parse.modern.js';
+
+  const canvas = document.getElementById('glcanvas');
+  const gl = canvas.getContext('webgl2');
+  const status = document.getElementById('status');
+  if (!gl) {
+    status.textContent = 'WebGL2 not supported';
+    throw new Error('WebGL2 not supported');
+  }
+
+  function showError(msg) {
+    status.textContent = msg;
+  }
+
+  function renderKTX2(arrayBuffer) {
+    let ktx;
+    try {
+      ktx = ktxRead(new Uint8Array(arrayBuffer));
+    } catch (e) {
+      showError('Failed to parse KTX2: ' + e);
+      return;
+    }
+    if (!ktx.levels || !ktx.levels[0]) {
+      showError('No valid texture data found.');
+      return;
+    }
+    const level = ktx.levels[0];
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // Detect format (restore: default to RGBA8/UNSIGNED_BYTE if fields missing)
+    let internalFormat = gl.RGBA;
+    let format = gl.RGBA;
+    let type = gl.UNSIGNED_BYTE;
+    let bytesPerPixel = 4;
+    let isCompressed = false;
+    if (ktx.glType === 0x1406 && ktx.glFormat === 0x1908 && ktx.glInternalFormat === 0x8814) {
+      // RGBA32F
+      internalFormat = gl.RGBA32F;
+      format = gl.RGBA;
+      type = gl.FLOAT;
+      bytesPerPixel = 16;
+    } else if (ktx.glType === 0 && ktx.glFormat === 0 && typeof ktx.glInternalFormat === 'number') {
+      // Compressed texture (e.g., BC1, BC3, etc.)
+      isCompressed = true;
+      internalFormat = ktx.glInternalFormat;
+    } else if (
+      (ktx.glType === undefined && ktx.glFormat === undefined && ktx.glInternalFormat === undefined) ||
+      (ktx.glType === 0 && ktx.glFormat === 0 && ktx.glInternalFormat === undefined)
+    ) {
+      // Default to RGBA8/UNSIGNED_BYTE for missing fields
+      internalFormat = gl.RGBA;
+      format = gl.RGBA;
+      type = gl.UNSIGNED_BYTE;
+      bytesPerPixel = 4;
+    }
+
+    let useLinear = true;
+    if (!isCompressed) {
+      const expectedSize = ktx.pixelWidth * ktx.pixelHeight * bytesPerPixel / (type === gl.FLOAT ? 4 : 1);
+      if (!level.levelData || level.levelData.length < expectedSize) {
+        showError(`Texture data too small for request: expected ${expectedSize} bytes, got ${level.levelData ? level.levelData.length : 0}`);
+        return;
+      }
+      if (type === gl.FLOAT) {
+        // Check for float texture support
+        const extColorBufferFloat = gl.getExtension('EXT_color_buffer_float');
+        if (!extColorBufferFloat) {
+          showError('EXT_color_buffer_float not supported: cannot display floating point textures.');
+          return;
+        }
+        // Check for linear filtering support for float textures
+        const floatLinear = gl.getExtension('OES_texture_float_linear');
+        if (!floatLinear) {
+          useLinear = false;
+        }
+        // Convert to Float32Array if needed
+        if (!(level.levelData instanceof Float32Array)) {
+          level.levelData = new Float32Array(level.levelData.buffer, level.levelData.byteOffset, level.levelData.byteLength / 4);
+        }
+      }
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        internalFormat,
+        ktx.pixelWidth,
+        ktx.pixelHeight,
+        0,
+        format,
+        type,
+        level.levelData
+      );
+    } else {
+      // Compressed texture
+      if (!level.levelData) {
+        showError('No compressed texture data found.');
+        return;
+      }
+      gl.compressedTexImage2D(
+        gl.TEXTURE_2D,
+        0,
+        internalFormat,
+        ktx.pixelWidth,
+        ktx.pixelHeight,
+        0,
+        level.levelData
+      );
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, useLinear ? gl.LINEAR : gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, useLinear ? gl.LINEAR : gl.NEAREST);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Shaders
+    const vsSource = `#version 300 es
+    in vec2 aPos;
+    in vec2 aTex;
+    out vec2 vTex;
+    void main() {
+      vTex = aTex;
+      gl_Position = vec4(aPos, 0, 1);
+    }`;
+    const fsSource = `#version 300 es
+    precision highp float;
+    in vec2 vTex;
+    uniform sampler2D uTex;
+    out vec4 outColor;
+    void main() {
+      outColor = texture(uTex, vTex);
+    }`;
+    function createShader(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    }
+    function createProgram(vs, fs) {
+      const p = gl.createProgram();
+      gl.attachShader(p, vs);
+      gl.attachShader(p, fs);
+      gl.linkProgram(p);
+      return p;
+    }
+    const vs = createShader(gl.VERTEX_SHADER, vsSource);
+    const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+    const prog = createProgram(vs, fs);
+    gl.useProgram(prog);
+    const verts = new Float32Array([
+      -1, -1, 0, 0,
+       1, -1, 1, 0,
+      -1,  1, 0, 1,
+       1,  1, 1, 1
+    ]);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(prog, 'aPos');
+    const aTex = gl.getAttribLocation(prog, 'aTex');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aTex);
+    gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 16, 8);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0);
+    gl.clearColor(0,0,0,1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    status.textContent = 'Texture loaded!';
+  }
+
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      renderKTX2(ev.target.result);
+    };
+    reader.onerror = function() {
+      showError('Failed to read file.');
+    };
+    reader.readAsArrayBuffer(file);
+  });
+  </script>
+
+</body>
+</html>

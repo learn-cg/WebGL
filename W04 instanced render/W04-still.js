@@ -1,0 +1,198 @@
+var gl;
+
+function testGLError(functionLastCalled) {
+    var lastError = gl.getError();
+    if (lastError != gl.NO_ERROR) {
+        alert(functionLastCalled + " failed (" + lastError + ")");
+        return false;
+    }
+    return true;
+}
+
+function initialiseGL(canvas) {
+    try {
+        gl = canvas.getContext("webgl2"); 
+        gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+    catch (e) {
+    }
+
+    if (!gl) {
+        alert("Unable to initialise WebGL 2. Your browser may not support it");
+        return false;
+    }
+
+    return true;
+}
+
+function initialiseBuffer() {
+
+    var vertexData = [
+        -0.4, -0.4, 0.0, // Bottom left
+         0.4, -0.4, 0.0, // Bottom right
+         0.0, 0.7, 0.0  // Top middle
+    ];
+
+    gl.vao = gl.createVertexArray();
+    gl.bindVertexArray(gl.vao);
+
+    gl.vertexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexData), gl.STATIC_DRAW);
+    
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 0, 0);
+
+        if (!testGLError("gl.bindVertexArray")) {
+        return false;
+    }
+
+    // Instance offset data
+    const offsets = new Float32Array([
+        -0.6, 0.0,
+        -0.3, 0.3,
+        0.0, -0.3,
+        0.3, 0.3,
+        0.6, 0.0
+    ]);
+    const offsetBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, offsetBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, offsets, gl.STATIC_DRAW);
+
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(1, 1);
+
+    gl.bindVertexArray(null);
+    return testGLError("initialiseBuffers");
+	
+}
+
+function initialiseShaders() {
+
+    var fragmentShaderSource = `#version 300 es
+precision mediump float;
+out vec4 FragColor;
+in vec2 colorVertex;
+void main(void)
+{ 
+    FragColor = vec4(colorVertex[0], colorVertex[1], 0.66, 1.0);
+}`;
+    gl.fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(gl.fragShader, fragmentShaderSource);
+    gl.compileShader(gl.fragShader);
+
+    if (!gl.getShaderParameter(gl.fragShader, gl.COMPILE_STATUS)) {
+        alert("Failed to compile the fragment shader.\n" + gl.getShaderInfoLog(gl.fragShader));
+        return false; 
+    }   
+    
+    // Vertex shader code
+    var vertexShaderSource = `#version 300 es
+precision mediump float;
+in vec4 myVertex;
+in vec2 myOffset;  // for instanced rendering
+out vec2 colorVertex;
+uniform mat4 transformationMatrix;
+
+void main(void) 
+{
+    gl_Position = transformationMatrix * vec4(myVertex.xy + myOffset, myVertex.z, 1.0);
+    colorVertex = myOffset;
+}`;
+    gl.vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(gl.vertexShader, vertexShaderSource);
+    gl.compileShader(gl.vertexShader);
+
+    // Check if compilation succeeded
+    if (!gl.getShaderParameter(gl.vertexShader, gl.COMPILE_STATUS)) {
+        alert("Failed to compile the vertex shader.\n" + gl.getShaderInfoLog(gl.vertexShader));
+        return false;
+    }
+
+    // Create the shader program
+    gl.programObject = gl.createProgram();
+    // Attach the fragment and vertex shaders to it
+    gl.attachShader(gl.programObject, gl.fragShader);
+    gl.attachShader(gl.programObject, gl.vertexShader);
+
+    // Bind the custom vertex attribute "myVertex" to location 0
+    gl.bindAttribLocation(gl.programObject, 0, "myVertex");
+    gl.bindAttribLocation(gl.programObject, 1, "myOffset");
+
+    // Link the program
+    gl.linkProgram(gl.programObject);
+
+    // Check if linking succeeded in a similar way we checked for compilation errors
+    if (!gl.getProgramParameter(gl.programObject, gl.LINK_STATUS)) {
+        alert("Failed to link the program.\n" + gl.getProgramInfoLog(gl.programObject));
+        return false;
+    }
+
+    gl.useProgram(gl.programObject);
+
+    return testGLError("initialiseShaders");
+}
+
+function renderScene() {
+
+    gl.clearColor(0.6, 0.8, 1.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    var matrixLocation = gl.getUniformLocation(gl.programObject, "transformationMatrix");
+
+    var transformationMatrix = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    ];
+
+    gl.uniformMatrix4fv(matrixLocation, gl.FALSE, transformationMatrix);
+    if (!testGLError("gl.uniformMatrix4fv")) {
+        return false;
+    }
+
+    // Bind the VAO (this automatically sets up all vertex attributes)
+    gl.bindVertexArray(gl.vao);
+
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, 5);
+
+        if (!testGLError("gl.drawArrays")) {
+            return false;
+        }
+
+        return true;
+}
+
+
+
+function main() {
+    var canid = document.getElementById("helloapicanvas");
+
+    if (!initialiseGL(canid)) {
+        return;
+    }
+
+    if (!initialiseBuffer()) {
+        return;
+    }
+
+    if (!initialiseShaders()) {
+        return;
+    }
+
+    // Render loop
+    requestAnimFrame = (function () {
+        return window.requestAnimationFrame ||
+			function (callback) {
+			    window.setTimeout(callback, 1000, 60);
+			};
+    })();
+
+    (function renderLoop() {
+        if (renderScene()) {
+            requestAnimFrame(renderLoop);
+        }
+    })();
+}

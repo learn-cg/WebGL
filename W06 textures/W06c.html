@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>W06c : WebGL2 Texture Array</title>
+  <style>
+    canvas { width: 400px; height: 400px; }
+  </style>
+</head>
+<body>
+<canvas id="glcanvas" width="400" height="400"></canvas>
+<div id="layerDisplay" style="margin-top:10px;font-family:monospace;font-size:18px;"></div>
+<script type="text/javascript">
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if (!gl) {
+  alert('WebGL2 not supported');
+}
+
+// Vertex shader
+const vsSource = `#version 300 es
+in vec2 aPosition;
+out vec2 vTexCoord;
+void main() {
+  vTexCoord = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0, 1);
+}`;
+
+// Fragment shader
+const fsSource = `#version 300 es
+precision highp float;
+precision highp sampler2DArray;
+in vec2 vTexCoord;
+out vec4 outColor;
+uniform sampler2DArray uTexArray;
+uniform float uLayer;
+void main() {
+  outColor = texture(uTexArray, vec3(vTexCoord, uLayer));
+  
+  /*
+  float layerFloor = floor(uLayer);
+  float layerFrac = uLayer - layerFloor;
+  vec4 colorA = texture(uTexArray, vec3(vTexCoord, layerFloor));
+  vec4 colorB = texture(uTexArray, vec3(vTexCoord, layerFloor + 1.0));
+  outColor = mix(colorA, colorB, layerFrac);
+  */
+   
+}`;
+
+// Compile shader
+function compileShader(src, type) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    throw gl.getShaderInfoLog(shader);
+  }
+  return shader;
+}
+
+// Create program
+function createProgram(vs, fs) {
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw gl.getProgramInfoLog(program);
+  }
+  return program;
+}
+
+const vs = compileShader(vsSource, gl.VERTEX_SHADER);
+const fs = compileShader(fsSource, gl.FRAGMENT_SHADER);
+const program = createProgram(vs, fs);
+
+// Quad vertices
+const vertices = new Float32Array([
+  -1, -1,
+   1, -1,
+  -1,  1,
+   1,  1,
+]);
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+const aPosition = gl.getAttribLocation(program, 'aPosition');
+gl.enableVertexAttribArray(aPosition);
+gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+
+// Create one texture array with 4 layers (Red, Green, Blue, Yellow)
+const texArray = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D_ARRAY, texArray);
+gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 2, 2, 4);
+const layer0 = new Uint8Array([
+  255,255,255,255,   255,0,0,255,
+  255,0,0,255,   255,0,0,255,
+]); // Red
+const layer1 = new Uint8Array([
+  0,255,0,255,   0,255,255,255,
+  0,255,255,255,   0,255,0,255,
+]); // Green
+const layer2 = new Uint8Array([
+  255,255,255,255,   0,0,255,255,
+  0,0,255,255,   0,0,255,255,
+]); // Blue
+const layer3 = new Uint8Array([
+  255,255,0,255,   255,255,255,255,
+  255,255,0,255,   255,255,0,255,
+]); // Yellow
+gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 2, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, layer0);
+gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 1, 2, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, layer1);
+gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 2, 2, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, layer2);
+gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 3, 2, 2, 1, gl.RGBA, gl.UNSIGNED_BYTE, layer3);
+gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+
+// Draw function
+function draw(layer) {
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(program);
+  gl.bindVertexArray(vao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texArray);
+  gl.uniform1i(gl.getUniformLocation(program, 'uTexArray'), 0);
+  gl.uniform1f(gl.getUniformLocation(program, 'uLayer'), layer);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  // Update layer display
+  document.getElementById('layerDisplay').textContent = `currentLayer: ${layer.toFixed(2)}`;
+}
+
+// State for current texture array and layer
+let currentLayer = 0.0;
+
+// Toggle layer on canvas click
+canvas.onclick = () => {
+  currentLayer = (currentLayer + 1.0);
+  if (currentLayer > 3.0) currentLayer -= 3.0;
+  draw(currentLayer);
+};
+
+// Switch texture array on keydown
+window.addEventListener('keydown', (e) => {
+  if (e.key === '1') {
+    currentLayer = 0.0;
+    draw(currentLayer);
+  } else if (e.key === '2') {
+    currentLayer = 1.0;
+    draw(currentLayer);
+  } else if (e.key === '3') {
+    currentLayer = 2.0;
+    draw(currentLayer);
+  } else if (e.key === '4') {
+    currentLayer = 3.0;
+    draw(currentLayer);
+  }
+  else if (e.key === '+') {
+    currentLayer += 0.1;
+    if (currentLayer > 3.0) currentLayer = 3.0;
+    draw(currentLayer);
+  }
+  else if (e.key === '-') {
+    currentLayer -= 0.1;
+    if (currentLayer < 0.0) currentLayer = 0.0;
+    draw(currentLayer);
+  }
+});
+
+const maxWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE); // max width/height for 2D/3D
+const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS); // max layers for texture arrays
+const maxDepth = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE); // max depth for 3D textures
+console.log('Max 2D/3D texture size:', maxWidth);
+console.log('Max array layers:', maxLayers);
+console.log('Max 3D texture depth:', maxDepth);
+
+draw(currentLayer);
+// Initial display
+document.getElementById('layerDisplay').textContent = `currentLayer: ${currentLayer.toFixed(2)}`;
+</script>
+</body>
+</html>
