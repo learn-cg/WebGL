@@ -8,6 +8,9 @@
   <h2>KTX2 32bit Float Image Loader</h2>
   <input type="file" id="fileInput" accept=".ktx2" />
   <canvas id="glcanvas" width="512" height="512"></canvas>
+  <div id="frameInfo" style="margin-top: 10px; font-family: monospace; font-size: 14px;">
+    Frame: <span id="frameValue">0</span> | Fade: <span id="fadeValue">0.000</span>
+  </div>
   <div id="status"></div>
   <script type="module">
     import { read as ktxRead } from './ktx-parse.modern.js';
@@ -92,8 +95,14 @@
         uniform sampler2D uTex;\n        
         uniform float fade;\n
         out vec4 outColor;\n
-        void main() {\n          
-           outColor = texture(uTex, vTex) * fade;\n
+        void main() {\n
+           vec4 texColor = texture(uTex, vTex);\n
+           // HDR tone mapping using Reinhard operator\n
+           // This maps any positive value range to [0,1]\n
+           vec3 hdrColor = texColor.rgb;\n
+           vec3 mapped = hdrColor / (hdrColor + vec3(1.0));\n
+           // Apply fade to the tone-mapped result\n
+           outColor = vec4(mapped * fade, 1.0);\n
         }`;
       function createShader(type, src) {
         const s = gl.createShader(type);
@@ -113,10 +122,10 @@
       const prog = createProgram(vs, fs);
       gl.useProgram(prog);
       const verts = new Float32Array([
-        -1, -1, 1, 1,
-         1, -1, 0, 1,
-        -1,  1, 1, 0,
-         1,  1, 0, 0
+        -0.8, -0.8, 1, 1,
+         0.8, -0.8, 0, 1,
+        -0.8,  0.8, 1, 0,
+         0.8,  0.8, 0, 0
       ]);
       const buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -132,7 +141,7 @@
       // Animation for fade
       const fadeLoc = gl.getUniformLocation(prog, 'fade');
       let frame = 0;
-      const totalFrames = 300;
+      const totalFrames = 3000;
       // Cancel previous animation if running
       if (animationFrameId !== null) {
         cancelAnimationFrame(animationFrameId);
@@ -140,6 +149,11 @@
       function animate() {
         const t = (frame % totalFrames) / (totalFrames - 1);
         const fade = Math.pow(64, 2 * t - 1); // log scale
+        
+        // Update frame and fade display
+        document.getElementById('frameValue').textContent = frame;
+        document.getElementById('fadeValue').textContent = fade.toExponential(3);
+        
         gl.clearColor(0,0,0,1);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.uniform1f(fadeLoc, fade);
